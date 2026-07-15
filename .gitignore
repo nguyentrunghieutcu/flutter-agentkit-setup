@@ -1,0 +1,27 @@
+# Flutter and Dart
+.dart_tool/
+.packages
+.pub/
+build/
+coverage/
+
+# Flutter platform artifacts
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+ios/Flutter/.last_build_id
+ios/Flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# IDE and local configuration
+.idea/
+.vscode/
+*.iml
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
