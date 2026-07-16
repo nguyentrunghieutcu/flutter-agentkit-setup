@@ -4,6 +4,10 @@ Bootstrap a Flutter project with a feature-first Clean Architecture scaffold and
 shared AI-agent instructions for Claude Code, Codex CLI, Cursor, and Windsurf.
 
 <p align="center">
+  <a href="https://www.tiktok.com/@hieu.modoro">TikTok · @hieu.modoro</a>
+</p>
+
+<p align="center">
   <img src="docs/images/flutter-agentkit-flow.png" alt="Flutter AgentKit flow: configure a new or existing Flutter project, then generate architecture and agent instructions" width="100%">
 </p>
 
@@ -175,18 +179,9 @@ bash setup-agent-config.sh --existing . --force
 
 ## Contributing
 
-Contributions are welcome. Please keep changes focused, update the relevant
-documentation, and run these checks before opening a pull request:
-
-```bash
-bash -n setup-agent-config.sh
-bash setup-agent-config.sh --help
-```
-
-When changing the generated Flutter scaffold, also verify the corresponding
-files in [`example/`](example/) still reflect the expected output.
+Please read the [contribution guide](CONTRIBUTING.md) for the development
+workflow, required checks, and pull request checklist.
 
 ## License
 
-This repository does not currently include a license. Add a `LICENSE` file
-before redistributing or using it as an open-source dependency.
+Distributed under the [MIT License](LICENSE).
