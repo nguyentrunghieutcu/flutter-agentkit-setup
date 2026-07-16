@@ -1,32 +1,192 @@
 # Flutter AgentKit
 
-Bootstrap Flutter projects with a feature-first Clean Architecture and consistent
-instructions for Claude Code, Codex CLI, Cursor, and Windsurf.
+Bootstrap a Flutter project with a feature-first Clean Architecture scaffold and
+shared AI-agent instructions for Claude Code, Codex CLI, Cursor, and Windsurf.
+
+<p align="center">
+  <img src="docs/images/flutter-agentkit-flow.png" alt="Flutter AgentKit flow: configure a new or existing Flutter project, then generate architecture and agent instructions" width="100%">
+</p>
+
+## Why Flutter AgentKit?
+
+Starting a Flutter app often means repeating the same setup work: create the
+project, organise the feature layers, add foundational packages, and explain
+the project's conventions to every coding agent. Flutter AgentKit puts that
+baseline behind one Bash script.
+
+- **Create a new app** with a working Provider, go_router, Dio, Hive, dartz,
+  and shared_preferences baseline.
+- **Configure an existing app** without restructuring its source tree.
+- **Generate agent context** for Claude Code, Codex CLI, Cursor, and Windsurf.
+- **Keep project context current** with a filesystem-derived `PROJECT_MAP.md`.
+
+## Requirements
+
+- Bash 4 or newer
+- Flutter SDK on your `PATH` when using `--new`
+- A Flutter project containing `pubspec.yaml` and `lib/` when using
+  `--existing`
 
 ## Quick start
 
-Create a Flutter project:
+Clone the repository, then run the setup script from its root.
+
+```bash
+git clone https://github.com/nguyentrunghieutcu/flutter-agentkit-setup.git
+cd flutter-agentkit-setup
+```
+
+### Create a new Flutter project
 
 ```bash
 bash setup-agent-config.sh --new my_app
 ```
 
-Configure an existing Flutter project:
+Set a parent directory and Android/iOS organisation identifier when needed:
+
+```bash
+bash setup-agent-config.sh \
+  --new my_app \
+  --path ~/Projects \
+  --org com.mycompany
+```
+
+The script runs `flutter create`, installs the baseline dependencies, creates
+the architecture scaffold, and writes the agent configuration.
+
+### Configure an existing Flutter project
 
 ```bash
 bash setup-agent-config.sh --existing /path/to/flutter-project
 ```
 
-For requirements, command options, generated files, and CI usage, see the
-[complete setup guide](README-setup.md).
+This path leaves application source files in place. It only creates or updates
+the agent configuration and project map.
 
-## What it creates
+### Use the interactive menu
 
-- A working Provider, go_router, Dio, Hive, and dartz baseline
-- A feature-first `presentation`, `domain`, and `data` structure
-- `CLAUDE.md` and `AGENTS.md` instruction files
-- A generated `.claude/PROJECT_MAP.md` based on the real project structure
+```bash
+bash setup-agent-config.sh
+```
+
+Choose whether to create a new Flutter project or configure an existing one.
+
+## What gets generated
+
+For a new project, AgentKit creates this feature-first structure:
+
+```text
+lib/
+├── app.dart
+├── main.dart
+├── core/
+│   ├── constants/
+│   ├── error/
+│   ├── network/
+│   ├── router/
+│   ├── theme/
+│   └── utils/
+├── features/
+│   └── home/
+│       ├── data/
+│       ├── domain/
+│       └── presentation/
+└── shared/
+    ├── providers/
+    └── widgets/
+```
+
+It also adds the following configuration to new and existing projects:
+
+```text
+your-project/
+├── CLAUDE.md
+├── AGENTS.md
+├── lib/AGENTS.md
+├── .claude/
+│   ├── PROJECT_MAP.md
+│   ├── rules/
+│   ├── reference/
+│   ├── context/
+│   ├── prompts/
+│   ├── snippets/
+│   ├── agents/
+│   ├── memory/
+│   └── skills/scan-project/
+└── .codex/skills/scan-project/
+```
+
+`PROJECT_MAP.md` is generated from the real filesystem and `pubspec.yaml`; it
+is not an agent-authored guess about the codebase.
+
+## Architecture
+
+The generated application follows a feature-first Clean Architecture layout.
+
+| Layer | Responsibilities | Dependency rule |
+| --- | --- | --- |
+| Presentation | Flutter UI, Providers, screens, and widgets | Calls use cases and repository abstractions |
+| Domain | Entities, repository interfaces, and pure-Dart use cases | Does not import Data or Presentation |
+| Data | Sources, models, and repository implementations | May import Domain; never Presentation |
+
+Each feature owns its three layers in `lib/features/<feature>/`. Shared,
+non-feature infrastructure belongs in `lib/core/`.
+
+## Command reference
+
+| Command or option | Description |
+| --- | --- |
+| `bash setup-agent-config.sh` | Starts the interactive project-type menu |
+| `--new [name]` | Creates a Flutter project and Clean Architecture scaffold |
+| `--existing [path]` | Adds agent configuration to a Flutter project |
+| `--path <path>` | Sets the parent directory for a new project or target path for an existing project |
+| `--org <domain>` | Sets the organisation passed to `flutter create` (default: `com.example`) |
+| `--skip-deps` | Skips baseline dependency installation for a new project |
+| `--force` | Overwrites files managed by the setup script |
+| `-h`, `--help` | Shows the command help |
+
+For example, create the scaffold but install the packages yourself later:
+
+```bash
+bash setup-agent-config.sh --new my_app --skip-deps
+```
+
+## Keep the project map current
+
+After moving or creating source files, regenerate the map in the target Flutter
+project:
+
+```bash
+bash .claude/skills/scan-project/scan.sh
+```
+
+Use the following command when you deliberately want to replace existing
+AgentKit-managed configuration:
+
+```bash
+bash setup-agent-config.sh --existing . --force
+```
+
+## Documentation
+
+- [Detailed setup guide](README-setup.md)
+- [Generated app architecture reference](example/docs/architecture.md)
+- [Working generated Flutter example](example/)
+
+## Contributing
+
+Contributions are welcome. Please keep changes focused, update the relevant
+documentation, and run these checks before opening a pull request:
+
+```bash
+bash -n setup-agent-config.sh
+bash setup-agent-config.sh --help
+```
+
+When changing the generated Flutter scaffold, also verify the corresponding
+files in [`example/`](example/) still reflect the expected output.
 
 ## License
 
-No license has been specified for this project yet.
+This repository does not currently include a license. Add a `LICENSE` file
+before redistributing or using it as an open-source dependency.
