@@ -6,21 +6,22 @@ paths:
 # Flutter / Dart Coding Rules
 
 ## Provider
-- Extend `ChangeNotifier`. Always call `notifyListeners()` after mutating state.
+- Extend `ChangeNotifier` for shared presentation state. Notify only after the
+  observable state is internally consistent.
 - Keep `_isLoading`, `_error`, and domain state as private fields with public getters.
-- Use `Consumer<T>` for scoped rebuilds. Use `context.read<T>()` only in callbacks.
-- Never call `context.watch` or `context.read` in a method called during `build`.
+- Use `Consumer<T>` or `Selector<T, R>` for scoped rebuilds.
+- Use `context.read<T>()` for one-time access; do not trigger mutations during build.
 - Register in `main.dart` `MultiProvider`. Use `ChangeNotifierProxyProvider` when dependent.
 
 ## Widgets
 - Prefer `StatelessWidget` + Provider over `StatefulWidget`.
 - Always use `const` constructors where possible.
 - Break `build` methods longer than ~40 lines into private `_build*` methods.
-- Never call `setState` in a large widget — push state to the Provider layer.
+- Keep ephemeral UI state local with `setState`; move shared or domain state to Provider.
 
 ## Lifecycle
 - Dispose every `TextEditingController`, `AnimationController`, `StreamSubscription`.
-- Add `if (!mounted) return;` after every `await` inside a `StatefulWidget`.
+- After an `await`, check `mounted` before touching `State`, `context`, or controllers.
 
 ## Navigation
 - Use `context.go()` for root/tab navigation (replaces stack).
@@ -28,8 +29,7 @@ paths:
 - Never use `Navigator.push` or `MaterialPageRoute` directly.
 
 ## Style
-- Never hardcode colors: use `Theme.of(context).colorScheme.*`
-- Never hardcode font sizes: use `Theme.of(context).textTheme.*`
+- Feature widgets use theme/tokens; literal colors and typography belong in theme files.
 - Never install new icon packages — use `Icons.*` or existing assets.
 
 ## Lists
@@ -37,11 +37,12 @@ paths:
 - Never build lists with `.map().toList()` inside `ListView` children.
 
 ## API
-- Use the shared Dio client from `lib/core/network/`. Never instantiate Dio in a feature.
+- Use the project's existing integration boundary. Do not instantiate network,
+  Firebase, database, or storage clients inside widgets.
 - Repositories return `Either<Failure, T>`. Catch exceptions inside the repository.
 - Use `FormData` + `MultipartFile` for file uploads — never embed base64 in JSON.
 
 ## Code hygiene
 - Remove all `debugPrint`, unused imports, dead code before finishing.
 - Never use `print()`.
-- `dart fix --apply` before considering any task complete.
+- Run formatting and static analysis checks before considering a task complete.

@@ -37,4 +37,7 @@ Fix: override `dispose()`, call `.dispose()` on every controller and `.cancel()`
 
 ## After the fix
 - Remove any `debugPrint` added during investigation.
+- Add or update a regression test when the behavior is testable.
+- Record repeated root causes and prevention in `.claude/context/known-issues.md`.
+- Run `bash .agents/skills/verify-project/scripts/verify.sh`.
 - State root cause clearly in completion summary.

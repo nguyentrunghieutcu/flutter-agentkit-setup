@@ -19,7 +19,7 @@
 #   --path <path>      Parent directory (new) or project path (existing)
 #   --org <domain>     Organization for flutter create (default: com.example)
 #   --skip-deps        Skips baseline dependency installation for a new project
-#   --force            Overwrites all existing agent configuration
+#   --force            Refreshes managed instructions; preserves project-owned context
 #   -h, --help         Shows help
 
 set -euo pipefail
@@ -57,7 +57,7 @@ Options:
   --path <path>      Parent directory for a new project or an existing project path
   --org <domain>     Organization for flutter create (default: com.example)
   --skip-deps        Skips flutter pub add for a new project
-  --force            Overwrites existing agent configuration
+  --force            Refreshes managed instructions; preserves project context/reference
   -h, --help         Shows this help
 USAGE_EOF
 }
@@ -142,6 +142,20 @@ write_file() {
   ok "$path"
 }
 
+# write_seed_file <path> — creates project-owned context once and never
+# overwrites it, including with --force.
+write_seed_file() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    skip "$path"
+    cat > /dev/null
+    return 0
+  fi
+  mkdir -p "$(dirname "$path")"
+  cat > "$path"
+  ok "$path"
+}
+
 install_new_project_dependencies() {
   [[ "$INSTALL_DEPS" -eq 1 ]] || {
     warn "Skipped dependency installation (--skip-deps)."
@@ -180,6 +194,7 @@ scaffold_clean_architecture() {
     lib/features/home/presentation/widgets \
     lib/shared/providers \
     lib/shared/widgets \
+    test/features/home/domain/usecases \
     docs
 
   cat > lib/main.dart <<MAIN_EOF
@@ -350,6 +365,41 @@ class GetAppInfoUseCase {
   Future<Either<Failure, AppInfo>> call() => _repository.getAppInfo();
 }
 GET_APP_INFO_EOF
+
+  cat > test/features/home/domain/usecases/get_app_info_use_case_test.dart <<GET_APP_INFO_TEST_EOF
+import 'package:dartz/dartz.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:${package_name}/core/error/failure.dart';
+import 'package:${package_name}/features/home/domain/entities/app_info.dart';
+import 'package:${package_name}/features/home/domain/repositories/app_info_repository.dart';
+import 'package:${package_name}/features/home/domain/usecases/get_app_info_use_case.dart';
+
+class _FakeAppInfoRepository implements AppInfoRepository {
+  @override
+  Future<Either<Failure, AppInfo>> getAppInfo() async {
+    return const Right(
+      AppInfo(title: 'Ready', description: 'AgentKit is configured'),
+    );
+  }
+}
+
+void main() {
+  test('returns app info from the repository', () async {
+    final useCase = GetAppInfoUseCase(_FakeAppInfoRepository());
+
+    final result = await useCase();
+
+    result.fold(
+      (failure) => fail('Expected app info, got: \${failure.message}'),
+      (info) {
+        expect(info.title, 'Ready');
+        expect(info.description, 'AgentKit is configured');
+      },
+    );
+  });
+}
+GET_APP_INFO_TEST_EOF
 
   cat > lib/features/home/data/models/app_info_model.dart <<APP_INFO_MODEL_EOF
 import 'package:${package_name}/core/utils/json_map.dart';
@@ -690,11 +740,12 @@ log "Directory: $ROOT"
 # ─────────────────────────────────────────────────────────────
 step "📁 Creating directory structure"
 mkdir -p .claude/rules .claude/reference .claude/context \
-         .claude/skills/scan-project .claude/prompts \
+         .claude/skills/scan-project .claude/skills/verify-project .claude/prompts \
          .claude/snippets .claude/agents .claude/memory \
-         .codex/skills
+         .agents/skills .codex/skills .codex/agents
 ok ".claude/{rules,reference,context,skills,prompts,snippets,agents,memory}"
-ok ".codex/skills"
+ok ".agents/skills (Codex project skills)"
+ok ".codex/{skills,agents}"
 
 # ─────────────────────────────────────────────────────────────
 step "📄 CLAUDE.md (root)"
@@ -702,24 +753,26 @@ write_file "CLAUDE.md" << 'CLAUDE_EOF'
 # Flutter Project
 
 ## Stack
-- Flutter stable / Dart 3.x
-- State: Provider + ChangeNotifier
-- Navigation: go_router
-- HTTP: Dio + interceptors
-- Storage: Hive / shared_preferences
-- Auth: custom JWT
+- Flutter / Dart. Treat `pubspec.yaml`, bootstrap code, and
+  `.claude/PROJECT_MAP.md` as the current stack inventory.
+- New AgentKit projects start with Provider, go_router, Dio, and Hive.
+- Existing projects may use different auth, storage, and backend services;
+  inspect the actual implementation before changing an integration.
 
 ## Commands
 - `flutter run` — dev
 - `flutter run --release` — release
-- `flutter analyze` — lint
-- `dart fix --apply` — auto fix
+- `flutter analyze` — required static analysis
+- `dart format --output=none --set-exit-if-changed lib test` — formatting check
+- `flutter test` — run targeted or full tests when tests exist
 - `flutter pub get` — install deps
 - `flutter gen-l10n` — regen i18n
-- Never run `flutter build` or `flutter test` unless explicitly asked
+- `bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh` — refresh risk signals
+- `bash .agents/skills/verify-project/scripts/verify.sh` — safe project checks
+- Run release builds only when the task requires release validation.
 
 ## Git
-Read `docs/git-flow-release.md` before any branch, merge, or release work.
+If `docs/git-flow-release.md` exists, read it before branch, merge, or release work.
 
 ## Cross-agent note
 This project is configured for both Claude Code (`.claude/`) and Codex CLI
@@ -752,6 +805,7 @@ must stay equivalent — `.claude/reference/`, `.claude/context/`, and
 
 | File | Read when |
 |---|---|
+| `.claude/PROJECT_RISKS.md` | Before every task; refresh when missing or after risky changes |
 | `.claude/context/sprint.md` | Starting a new session or task scope is ambiguous |
 | `.claude/context/known-issues.md` | Before fixing a bug or editing a fragile area |
 | `.claude/context/changelog.md` | Need to know what changed recently |
@@ -763,6 +817,7 @@ must stay equivalent — `.claude/reference/`, `.claude/context/`, and
 | Skill | Invoke when |
 |---|---|
 | `/scan-project` | `PROJECT_MAP.md` missing or > 7 days old |
+| `/verify-project` | Before finishing a code change or after fixing a bug |
 
 Re-run scan manually anytime: `bash .claude/skills/scan-project/scan.sh`
 
@@ -778,12 +833,11 @@ Re-run scan manually anytime: `bash .claude/skills/scan-project/scan.sh`
 
 ---
 
-## snippets/ — Copy directly into project
+## snippets/ — Project-specific examples only
 
 | File | Use for |
 |---|---|
-| `.claude/snippets/base_provider.dart` | Base class for feature providers |
-| `.claude/snippets/api_interceptor.dart` | Auth + error Dio interceptors |
+| `.claude/snippets/README.md` | Rules for adding verified, project-specific snippets |
 
 ---
 
@@ -805,8 +859,12 @@ write_file ".claude/rules/workflow.md" << 'WORKFLOW_EOF'
 ## Before every task
 1. Check `.claude/PROJECT_MAP.md` exists and is recent.
    - Missing or stale (> 7 days) → run `bash .claude/skills/scan-project/scan.sh` first.
-   - Exists → read "Structure" and "Features" sections before touching any file.
-2. Read only the rules file relevant to the task type:
+   - Exists → use it as a navigation index, then verify relevant files directly.
+2. Read `.claude/PROJECT_RISKS.md` before editing. If it is missing, run
+   `bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh`.
+   - Errors are blockers.
+   - Warnings are heuristic review prompts, not proof of a defect.
+3. Read only the rules file relevant to the task type:
    - Bug fix → `.claude/rules/bugfix.md`
    - New feature → `.claude/rules/new-feature.md`
    - Architecture question → `.claude/rules/decisions.md`
@@ -822,6 +880,9 @@ write_file ".claude/rules/workflow.md" << 'WORKFLOW_EOF'
 - If a file or folder was created or moved → update `.claude/PROJECT_MAP.md`
   (or re-run `bash .claude/skills/scan-project/scan.sh`).
 - If a new Provider was added → verify it appears after re-scan.
+- Run `bash .agents/skills/verify-project/scripts/verify.sh`.
+- For a bug fix, add a regression test when a stable test seam exists. If it
+  does not, record the exact manual verification and the missing test seam.
 - Append completion summary:
 
 ```
@@ -832,21 +893,20 @@ write_file ".claude/rules/workflow.md" << 'WORKFLOW_EOF'
 ```
 
 ## Never do
-- Add, move, or delete folders without user confirmation.
-- Run `flutter build`, `flutter test`, or `dart compile` unless asked.
+- Make an architectural, dependency, or data-migration change without stating it.
+- Run destructive migration, deploy, release, or credential commands unless asked.
 - Use `print()` — use `debugPrint()` only, remove before finishing.
-- Create `*_test.dart` files unless tests are explicitly requested.
 WORKFLOW_EOF
 
 write_file ".claude/rules/structure.md" << 'STRUCTURE_EOF'
 # Structure Rules
 
 ## Source of truth
-`.claude/PROJECT_MAP.md` is the single source of truth for what exists in this project.
-It is generated by `bash .claude/skills/scan-project/scan.sh` — do not hand-edit the
-generated tables, only the "Sensitive Areas" and "Change Log" sections.
-- Do not create files in locations not reflected in PROJECT_MAP.md without asking.
-- Do not assume a folder exists — verify in PROJECT_MAP.md first.
+The filesystem, `pubspec.yaml`, and runtime configuration are authoritative.
+`.claude/PROJECT_MAP.md` is a generated navigation index created by
+`bash .claude/skills/scan-project/scan.sh`; do not hand-edit it.
+- Do not assume a folder, service, or dependency exists — verify it directly.
+- Follow the existing layout for local changes. Ask before a broad architecture move.
 - After any structural change, re-run the scan script.
 
 ## Folder layout (canonical)
@@ -904,21 +964,22 @@ paths:
 # Flutter / Dart Coding Rules
 
 ## Provider
-- Extend `ChangeNotifier`. Always call `notifyListeners()` after mutating state.
+- Extend `ChangeNotifier` for shared presentation state. Notify only after the
+  observable state is internally consistent.
 - Keep `_isLoading`, `_error`, and domain state as private fields with public getters.
-- Use `Consumer<T>` for scoped rebuilds. Use `context.read<T>()` only in callbacks.
-- Never call `context.watch` or `context.read` in a method called during `build`.
+- Use `Consumer<T>` or `Selector<T, R>` for scoped rebuilds.
+- Use `context.read<T>()` for one-time access; do not trigger mutations during build.
 - Register in `main.dart` `MultiProvider`. Use `ChangeNotifierProxyProvider` when dependent.
 
 ## Widgets
 - Prefer `StatelessWidget` + Provider over `StatefulWidget`.
 - Always use `const` constructors where possible.
 - Break `build` methods longer than ~40 lines into private `_build*` methods.
-- Never call `setState` in a large widget — push state to the Provider layer.
+- Keep ephemeral UI state local with `setState`; move shared or domain state to Provider.
 
 ## Lifecycle
 - Dispose every `TextEditingController`, `AnimationController`, `StreamSubscription`.
-- Add `if (!mounted) return;` after every `await` inside a `StatefulWidget`.
+- After an `await`, check `mounted` before touching `State`, `context`, or controllers.
 
 ## Navigation
 - Use `context.go()` for root/tab navigation (replaces stack).
@@ -926,8 +987,7 @@ paths:
 - Never use `Navigator.push` or `MaterialPageRoute` directly.
 
 ## Style
-- Never hardcode colors: use `Theme.of(context).colorScheme.*`
-- Never hardcode font sizes: use `Theme.of(context).textTheme.*`
+- Feature widgets use theme/tokens; literal colors and typography belong in theme files.
 - Never install new icon packages — use `Icons.*` or existing assets.
 
 ## Lists
@@ -935,14 +995,15 @@ paths:
 - Never build lists with `.map().toList()` inside `ListView` children.
 
 ## API
-- Use the shared Dio client from `lib/core/network/`. Never instantiate Dio in a feature.
+- Use the project's existing integration boundary. Do not instantiate network,
+  Firebase, database, or storage clients inside widgets.
 - Repositories return `Either<Failure, T>`. Catch exceptions inside the repository.
 - Use `FormData` + `MultipartFile` for file uploads — never embed base64 in JSON.
 
 ## Code hygiene
 - Remove all `debugPrint`, unused imports, dead code before finishing.
 - Never use `print()`.
-- `dart fix --apply` before considering any task complete.
+- Run formatting and static analysis checks before considering a task complete.
 FLUTTER_EOF
 
 write_file ".claude/rules/bugfix.md" << 'BUGFIX_EOF'
@@ -985,6 +1046,9 @@ Fix: override `dispose()`, call `.dispose()` on every controller and `.cancel()`
 
 ## After the fix
 - Remove any `debugPrint` added during investigation.
+- Add or update a regression test when the behavior is testable.
+- Record repeated root causes and prevention in `.claude/context/known-issues.md`.
+- Run `bash .agents/skills/verify-project/scripts/verify.sh`.
 - State root cause clearly in completion summary.
 BUGFIX_EOF
 
@@ -1005,7 +1069,7 @@ Before writing any code, confirm in `.claude/PROJECT_MAP.md`:
 
 **2. Data** — `lib/features/<name>/data/`
 - [ ] Model: `fromJson`, `toJson`, `toEntity()`
-- [ ] Remote source: calls Dio client, returns models
+- [ ] Source: uses the project's existing HTTP/Firebase/storage boundary
 - [ ] Repository impl: wraps source in try/catch, returns `Either`
 
 **3. Presentation** — `lib/features/<name>/presentation/`
@@ -1024,7 +1088,8 @@ Before writing any code, confirm in `.claude/PROJECT_MAP.md`:
 - [ ] No `Navigator.push` — use `context.go` / `context.push`
 - [ ] No `print()` or leftover `debugPrint`
 - [ ] All three states (loading / error / content) handled in every screen
-- [ ] `dart fix --apply` clean
+- [ ] Targeted tests added or updated
+- [ ] `bash .agents/skills/verify-project/scripts/verify.sh` passes
 NEWFEATURE_EOF
 
 write_file ".claude/rules/decisions.md" << 'DECISIONS_EOF'
@@ -1058,7 +1123,7 @@ DECISIONS_EOF
 # ─────────────────────────────────────────────────────────────
 step "📄 .claude/reference/"
 
-write_file ".claude/reference/patterns.md" << 'PATTERNS_EOF'
+write_seed_file ".claude/reference/patterns.md" << 'PATTERNS_EOF'
 # Patterns
 
 > Read when writing a provider, repository, use case, form, or navigation call.
@@ -1216,82 +1281,51 @@ class _LoginFormState extends State<LoginForm> {
 ```
 PATTERNS_EOF
 
-write_file ".claude/reference/api.md" << 'API_EOF'
-# API Reference
+write_seed_file ".claude/reference/api.md" << 'API_EOF'
+# Integration Reference
 
-> Read before writing any API call, creating a model, or handling HTTP errors.
-> Update this file whenever a new endpoint is integrated.
+> Routing index for external systems. Verify every claim against the current
+> source and configuration before editing an integration.
 
-## HTTP Client
+## Source of Truth
 
-File: `lib/core/network/api_client.dart`
-Base URL: `AppConstants.baseUrl` in `lib/core/constants/app_constants.dart`
-Auth: Bearer token injected by `AuthInterceptor` — do not add headers manually.
-Errors: handled centrally in `ApiErrorInterceptor` — do not wrap calls in try/catch in providers.
+- Dependencies: `pubspec.yaml`
+- App bootstrap and client construction: `lib/main.dart`, `lib/app.dart`
+- HTTP clients: `lib/core/network/`
+- Firebase setup: `firebase.json`, `firestore.rules`, `functions/` when present
+- Other backends/workers: inspect their package and deployment config
 
-```dart
-class ProductRemoteSource {
-  final ApiClient _client;
-  ProductRemoteSource(this._client);
+## Integration Inventory
 
-  Future<List<ProductModel>> getProducts() async {
-    final response = await _client.get('/products');
-    return (response.data['data'] as List)
-        .map((e) => ProductModel.fromJson(e))
-        .toList();
-  }
-}
-```
-
-## Response envelope
-
-```json
-{ "success": true, "data": {}, "message": "OK", "errors": null }
-```
-
-Paginated:
-```json
-{ "data": [], "meta": { "current_page": 1, "last_page": 5, "per_page": 20, "total": 98 } }
-```
-
-## File upload
-
-```dart
-final formData = FormData.fromMap({
-  'avatar': await MultipartFile.fromFile(path, filename: 'avatar.jpg'),
-  'user_id': userId,
-});
-await _client.post('/user/avatar', data: formData);
-```
-
-Never embed file bytes as base64 in a JSON body.
-
-## Endpoint Registry
-
-### Auth
-| Method | Path | Body | Returns |
+| System | Client / Source | Auth | Contract owner |
 |---|---|---|---|
-| POST | `/auth/login` | `{email, password}` | `{token, user}` |
-| POST | `/auth/logout` | — | `{message}` |
-| GET | `/auth/me` | — | `UserModel` |
-| POST | `/auth/refresh` | `{refresh_token}` | `{token}` |
+| HTTP API | Inspect `lib/core/network/` | Verify interceptor/client | Backend route/schema |
+| Firebase | Inspect app bootstrap and repositories | Firebase Auth / Rules | `firestore.rules`, Functions |
+| Local storage | Inspect data sources | Device-local | Models and migration code |
 
-> Add feature endpoints below as they are integrated.
+Replace these generic rows with project-specific paths after the first scan.
 
-## HTTP Error Codes
+## Change Checklist
 
-| Status | Meaning | Handled by |
-|---|---|---|
-| 401 | Unauthenticated | Interceptor → redirect to login |
-| 403 | Forbidden | Show error, do not redirect |
-| 422 | Validation | Parse `errors` field, show per-field |
-| 500 | Server error | Show generic message |
+- Identify the authoritative owner of each field.
+- Update client model, repository/source, backend handler, security rules, and
+  migration/default behavior together when a schema crosses boundaries.
+- Make retryable backend operations idempotent.
+- Use a transaction/batch for multi-document invariants.
+- Preserve the existing error contract and user-safe messages.
+- Add a regression test or document the exact manual verification.
+
+## Endpoint / Callable Registry
+
+| System | Operation | Input | Output | Owner |
+|---|---|---|---|
+| _(fill from source)_ | | | | |
 API_EOF
 
 # ─────────────────────────────────────────────────────────────
 step "📄 .claude/context/"
 
-write_file ".claude/context/sprint.md" << 'SPRINT_EOF'
+write_seed_file ".claude/context/sprint.md" << 'SPRINT_EOF'
 # Current Sprint
 
 > Read at the start of a new session or when a task scope is unclear.
@@ -1310,15 +1344,31 @@ write_file ".claude/context/sprint.md" << 'SPRINT_EOF'
 <!-- Anything the team needs to remember mid-sprint -->
 SPRINT_EOF
 
-write_file ".claude/context/known-issues.md" << 'KNOWNISSUES_EOF'
+write_seed_file ".claude/context/known-issues.md" << 'KNOWNISSUES_EOF'
 # Known Issues
 
 > Read before fixing a bug or editing a complex/fragile area.
 > Agent appends here when discovering a new bug or workaround during a task.
 
 ## Active Bugs
-| Area | Description | Workaround | Reported |
-|---|---|---|---|
+| Area | Symptom | Root cause / hypothesis | Workaround | Reported |
+|---|---|---|---|---|
+
+## Recurring Patterns
+| Pattern | Prevention | Required verification |
+|---|---|---|
+| Duplicate sources of truth | Name one authoritative owner; derive all mirrors | Test both update directions |
+| Async lifecycle ordering | Publish user-visible state before slow cleanup | Test slow/failing cleanup |
+| Cross-system schema drift | Change client, backend, rules, and defaults together | Contract or emulator test |
+| Retry/concurrency duplication | Use transactions and deterministic IDs | Retry/idempotency test |
+| Legacy/default compatibility | Keep tolerant reads/defaults and add explicit migrations | Old document/local-cache fixture |
+| Mobile inset/layout regression | Separate full-page and modal safe-area behavior | Compact width plus top/bottom inset widget test |
+| Missing regression seam | Extract testable domain/provider/backend behavior | Targeted test or documented manual gap |
+| Oversized state/UI coordinator | Split new responsibilities behind explicit interfaces | Ownership test and focused unit/widget tests |
+
+## Resolved Bugs
+| Area | Root cause | Resolution | Prevention / regression test | Resolved |
+|---|---|---|---|---|
 
 ## Fragile Areas
 | File / Area | Why fragile |
@@ -1332,7 +1382,7 @@ write_file ".claude/context/known-issues.md" << 'KNOWNISSUES_EOF'
 |---|---|---|
 KNOWNISSUES_EOF
 
-write_file ".claude/context/changelog.md" << 'CHANGELOG_EOF'
+write_seed_file ".claude/context/changelog.md" << 'CHANGELOG_EOF'
 # Changelog
 
 > Read when you need to know what changed recently to avoid redoing work.
@@ -1456,130 +1506,16 @@ DEBUG_EOF
 # ─────────────────────────────────────────────────────────────
 step "📄 .claude/snippets/"
 
-write_file ".claude/snippets/base_provider.dart" << 'BASEPROVIDER_EOF'
-// snippets/base_provider.dart
-// Copy to lib/shared/providers/ or use as base class for feature providers.
-// Replace <State> with your actual state type.
+write_seed_file ".claude/snippets/README.md" << 'SNIPPETSREADME_EOF'
+# Project Snippets
 
-import 'package:flutter/foundation.dart';
+Add snippets only after extracting a pattern from production code in this
+project and validating it with the normal analysis/tests.
 
-abstract class BaseProvider<T> extends ChangeNotifier {
-  T? _data;
-  bool _isLoading = false;
-  String? _error;
-
-  T? get data => _data;
-  bool get isLoading => _isLoading;
-  String? get error => _error;
-  bool get hasData => _data != null;
-  bool get hasError => _error != null;
-
-  @protected
-  void setLoading() {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-  }
-
-  @protected
-  void setData(T data) {
-    _data = data;
-    _isLoading = false;
-    _error = null;
-    notifyListeners();
-  }
-
-  @protected
-  void setError(String message) {
-    _error = message;
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  void reset() {
-    _data = null;
-    _isLoading = false;
-    _error = null;
-    notifyListeners();
-  }
-}
-BASEPROVIDER_EOF
-
-write_file ".claude/snippets/api_interceptor.dart" << 'APIINTERCEPTOR_EOF'
-// snippets/api_interceptor.dart
-// Copy to lib/core/network/interceptors/.
-// Handles: auth header injection, 401 token refresh, error mapping.
-
-import 'package:dio/dio.dart';
-
-class AuthInterceptor extends Interceptor {
-  final String? Function() getToken;
-  final Future<String?> Function() refreshToken;
-  final VoidCallback onAuthExpired;
-
-  AuthInterceptor({
-    required this.getToken,
-    required this.refreshToken,
-    required this.onAuthExpired,
-  });
-
-  @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final token = getToken();
-    if (token != null) {
-      options.headers['Authorization'] = 'Bearer $token';
-    }
-    handler.next(options);
-  }
-
-  @override
-  Future<void> onError(DioException err, ErrorInterceptorHandler handler) async {
-    if (err.response?.statusCode == 401) {
-      try {
-        final newToken = await refreshToken();
-        if (newToken != null) {
-          final opts = err.requestOptions;
-          opts.headers['Authorization'] = 'Bearer $newToken';
-          final response = await Dio().fetch(opts);
-          return handler.resolve(response);
-        }
-      } catch (_) {
-        onAuthExpired();
-      }
-    }
-    handler.next(err);
-  }
-}
-
-class ApiErrorInterceptor extends Interceptor {
-  @override
-  void onError(DioException err, ErrorInterceptorHandler handler) {
-    final status = err.response?.statusCode;
-    final message = switch (status) {
-      400 => 'Bad request',
-      403 => 'Access denied',
-      404 => 'Not found',
-      422 => _parse422(err.response?.data),
-      500 => 'Server error, please try again',
-      null => 'No internet connection',
-      _ => 'Unexpected error ($status)',
-    };
-    err.requestOptions.extra['parsedError'] = message;
-    handler.next(err);
-  }
-
-  String _parse422(dynamic data) {
-    try {
-      final errors = data['errors'] as Map<String, dynamic>;
-      return errors.values.first is List
-          ? (errors.values.first as List).first.toString()
-          : errors.values.first.toString();
-    } catch (_) {
-      return 'Validation error';
-    }
-  }
-}
-APIINTERCEPTOR_EOF
+Do not keep generic auth, retry, Provider base-class, or API envelope snippets:
+those patterns depend on the project's actual client construction, state
+ownership, error contract, and backend authentication.
+SNIPPETSREADME_EOF
 
 # ─────────────────────────────────────────────────────────────
 step "📄 .claude/agents/"
@@ -1587,23 +1523,37 @@ step "📄 .claude/agents/"
 write_file ".claude/agents/code-reviewer.md" << 'CODEREVIEWER_EOF'
 ---
 name: code-reviewer
-description: Reviews Flutter/Dart code for correctness, Provider patterns, performance, and style compliance. Invoke for PR review or before committing significant changes.
+description: Reviews Flutter/Dart and connected backend changes for correctness, state ownership, lifecycle, cross-system contracts, security, idempotency, performance, and regression coverage. Invoke for PR review or before finishing significant changes.
 tools: Read, Grep, Glob
 ---
 
-You are a senior Flutter engineer reviewing code in this project.
+You are a senior Flutter/backend engineer reviewing code in this project.
 
 Review for:
-1. **Correctness** — logic errors, null safety gaps, missing `dispose()`, `setState after dispose`
-2. **Provider patterns** — `notifyListeners()` after mutation, no business logic in widgets
-3. **Performance** — `const` constructors, `ListView.builder`, no heavy work in `build()`
-4. **Style** — no hardcoded colors/sizes, no `Navigator.push`, no `print()`
-5. **Structure** — files in correct layer, no cross-layer violations
+1. **Correctness and lifecycle** — logic, null/default handling, cleanup, async ordering
+2. **State ownership** — one mutable owner, no stale mirrors or mutations during build
+3. **Cross-system contracts** — client models, backend handlers, rules, defaults, migrations
+4. **Security and concurrency** — auth/role checks, transactions, retry idempotency
+5. **Performance and structure** — scoped rebuilds, lazy lists, hotspot growth, layer boundaries
+6. **Regression coverage** — tests for changed behavior or a clearly stated missing seam
 
-For every finding, state: file and line number, what is wrong, concrete fix.
+Order findings by severity. For each finding state file/line, impact, root cause,
+concrete fix, and the regression test or verification needed.
 Do not suggest changes outside the files you were asked to review.
 Do not propose switching to a different state management solution.
 CODEREVIEWER_EOF
+
+write_file ".codex/agents/code-reviewer.toml" << 'CODEXREVIEWER_EOF'
+name = "code-reviewer"
+description = "Reviews Flutter/Dart and connected backend changes for correctness, state ownership, lifecycle, cross-system contracts, security, idempotency, performance, and regression coverage."
+developer_instructions = """
+Review findings first, ordered by severity.
+
+Check correctness and lifecycle; single-source state ownership; client/backend/rules/schema parity; authentication and role validation; transactions and retry idempotency; hotspot growth and performance; and regression coverage.
+
+For every finding include file and line, impact, root cause, concrete fix, and the test or verification needed. Keep the review scoped and do not propose replacing the project's state-management stack.
+"""
+CODEXREVIEWER_EOF
 
 # ─────────────────────────────────────────────────────────────
 step "📄 .claude/memory/"
@@ -1628,14 +1578,14 @@ step "📄 .claude/skills/scan-project/"
 
 write_file ".claude/skills/scan-project/SKILL.md" << 'SCANSKILL_EOF'
 ---
-description: Scans the Flutter project source and regenerates .claude/PROJECT_MAP.md. Invoke when PROJECT_MAP.md is missing or more than 7 days old.
-user-invocable: true
+name: scan-project
+description: Regenerate the Flutter project navigation map from the real filesystem and configuration. Use when PROJECT_MAP.md is missing or stale, after structural changes, or when an agent needs a reliable inventory of features, backends, tests, routes, providers, and large files.
 ---
 
 # Scan Project
 
-Runs a real filesystem scan and regenerates `.claude/PROJECT_MAP.md` from
-actual source — never guess or hand-write this file.
+Run the scanner and treat its output as a generated navigation index. Verify
+implementation details in the source before editing them.
 
 ## Run it directly (fastest — no LLM tokens needed)
 ```bash
@@ -1644,9 +1594,9 @@ bash .claude/skills/scan-project/scan.sh
 
 ## If asked to do it manually instead, follow these steps
 
-**1. Scan source tree**
+**1. Scan source tree and backends**
 ```bash
-find lib/ -type f -name "*.dart" | grep -v ".g.dart\|.freezed.dart\|.mocks.dart" | sort
+find lib functions worker -type f 2>/dev/null | sort
 ```
 
 **2. Scan dependencies**
@@ -1674,9 +1624,8 @@ grep -rn "GoRoute" lib/core/router/ --include="*.dart"
 find lib/shared/widgets/ -name "*.dart" | sort
 ```
 
-**7. Write `.claude/PROJECT_MAP.md`** — fill every table with real data.
-Never leave placeholder rows. Report: feature count, provider count, any
-structural anomalies noticed.
+**7. Write `.claude/PROJECT_MAP.md`** — generated content only. Keep manual
+notes in `.claude/context/known-issues.md` and `.claude/context/changelog.md`.
 SCANSKILL_EOF
 
 write_file ".claude/skills/scan-project/scan.sh" << 'SCANSCRIPT_EOF'
@@ -1706,6 +1655,7 @@ if [[ -f pubspec.yaml ]]; then
   DEPS="$(awk '/^dependencies:/{f=1;next}/^dev_dependencies:/{f=0}f' pubspec.yaml \
     | grep -E '^  [^ ]' \
     | sed -E 's/^  ([a-zA-Z0-9_.-]+):[[:space:]]*(.*)$/| \1 | \2 |/' || true)"
+  DEPS="$(printf '%s\n' "$DEPS" | sed 's/| flutter |  |/| flutter | sdk: flutter |/')"
   [[ -z "$DEPS" ]] && DEPS="| _(none found)_ | |"
 fi
 
@@ -1719,7 +1669,7 @@ else
   PROVIDERS_TABLE="| _(none found yet)_ | |"
 fi
 
-SCREENS="$(find lib \( -iname '*screen*.dart' -o -iname '*page*.dart' \) 2>/dev/null | sort || true)"
+SCREENS="$(find lib -type f \( -iname '*_screen.dart' -o -iname '*_page.dart' \) 2>/dev/null | sort || true)"
 if [[ -n "$SCREENS" ]]; then
   SCREENS_TABLE="$(echo "$SCREENS" | while read -r f; do
     name=$(basename "$f" .dart)
@@ -1729,7 +1679,7 @@ else
   SCREENS_TABLE="| _(none found yet)_ | |"
 fi
 
-ROUTES="$(grep -rn "path:\s*['\"]" lib/core/router 2>/dev/null | sed -E "s/^([^:]+):([0-9]+):.*path:\s*['\"]([^'\"]+)['\"].*/| \3 | \1:\2 |/" || true)"
+ROUTES="$(grep -rEn "path:[[:space:]]*['\"]" lib/core/router 2>/dev/null | sed -E "s/^([^:]+):([0-9]+):.*path:[[:space:]]*['\"]([^'\"]+)['\"].*/| \3 | \1:\2 |/" || true)"
 [[ -z "$ROUTES" ]] && ROUTES="| _(none found yet — check lib/core/router/)_ | |"
 
 WIDGETS="$(find lib/shared/widgets -name '*.dart' 2>/dev/null | sort || true)"
@@ -1753,7 +1703,7 @@ if [[ -d lib/features ]]; then
   done)"
 fi
 
-DART_COUNT="$(find lib -name '*.dart' 2>/dev/null | grep -vc '.g.dart\|.freezed.dart\|.mocks.dart' || true)"
+DART_COUNT="$(find lib -name '*.dart' 2>/dev/null | grep -Evc '\.g\.dart$|\.freezed\.dart$|\.mocks\.dart$' || true)"
 [[ -n "$DART_COUNT" ]] || DART_COUNT="0"
 PROVIDER_COUNT="$(printf '%s\n' "$PROVIDERS" | sed '/^$/d' | wc -l | tr -d ' ')"
 FEATURE_COUNT="0"
@@ -1761,12 +1711,31 @@ if [[ -d lib/features ]]; then
   FEATURE_COUNT="$(find lib/features -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"
 fi
 
+BACKENDS_TABLE=""
+[[ -f firebase.json ]] && BACKENDS_TABLE+="| Firebase | \`firebase.json\` | App/backend configuration |"$'\n'
+[[ -f firestore.rules ]] && BACKENDS_TABLE+="| Firestore Rules | \`firestore.rules\` | Authorization and write invariants |"$'\n'
+[[ -f functions/package.json ]] && BACKENDS_TABLE+="| Cloud Functions | \`functions/\` | Server-authoritative operations |"$'\n'
+[[ -f worker/package.json ]] && BACKENDS_TABLE+="| Worker/API | \`worker/\` | External API surface |"$'\n'
+[[ -z "$BACKENDS_TABLE" ]] && BACKENDS_TABLE="| _(none detected)_ | | |"
+
+TEST_COUNT="0"
+if [[ -d test ]]; then
+  TEST_COUNT="$(find test -type f -name '*_test.dart' | wc -l | tr -d ' ')"
+fi
+
+HOTSPOTS="$(find lib -type f -name '*.dart' | while IFS= read -r file; do
+  lines=$(wc -l < "$file" | tr -d ' ')
+  printf '%s\t%s\n' "$lines" "$file"
+done | sort -nr | awk -F '\t' '$1 >= 600 {printf "| %s | `%s` |\n", $1, $2; count++; if (count == 10) exit}')"
+[[ -z "$HOTSPOTS" ]] && HOTSPOTS="| _(none at or above 600 lines)_ | |"
+
 cat > "$OUT" << MAPEOF
 # PROJECT_MAP.md
 > Generated: $DATE
-> Source of truth for project structure. Regenerate anytime:
+> Generated navigation index. The filesystem and runtime configuration remain authoritative.
+> Regenerate anytime:
 > \`bash .claude/skills/scan-project/scan.sh\`
-> Do not hand-edit the generated tables — edit "Sensitive Areas" and "Change Log" only.
+> Do not hand-edit this file. Keep manual notes in \`.claude/context/\`.
 
 ---
 
@@ -1827,42 +1796,586 @@ $WIDGETS_TABLE
 
 ---
 
-## Sensitive Areas
-_(edit by hand — not overwritten by re-scan)_
+## Backend Surfaces
 
-| File / Folder | Why |
-|---|---|
-| \`lib/core/network/\` | Singleton Dio client — changes affect all API calls |
-| \`lib/main.dart\` | Provider registration order matters |
-| \`lib/core/router/\` | Route changes affect deep links and navigation |
+| System | Path | Responsibility |
+|---|---|---|
+$BACKENDS_TABLE
 
 ---
 
-## Change Log
-_(edit by hand — not overwritten by re-scan)_
+## Tests ($TEST_COUNT Flutter test files)
 
-| Date | Change | Reason |
+| Suite | Path | Status |
 |---|---|---|
-| $DATE | Initial scan | Generated by scan.sh |
+| Flutter | \`test/\` | $TEST_COUNT test files detected |
+
+---
+
+## Large Dart Files
+
+| Lines | File |
+|---|---|
+$HOTSPOTS
 MAPEOF
 
 echo "✓ .claude/PROJECT_MAP.md regenerated"
 echo "  Dart files: $DART_COUNT"
 echo "  Features:   $FEATURE_COUNT"
 echo "  Providers:  $PROVIDER_COUNT"
+echo "  Tests:      $TEST_COUNT"
 SCANSCRIPT_EOF
 chmod +x .claude/skills/scan-project/scan.sh 2>/dev/null || true
 
-# Mirror skill into .codex/ (Codex CLI reads compatible SKILL.md format too)
-if [[ "$FORCE" -eq 1 || ! -d .codex/skills/scan-project ]]; then
-  mkdir -p .codex/skills/scan-project
-  cp .claude/skills/scan-project/SKILL.md .codex/skills/scan-project/SKILL.md
-  cp .claude/skills/scan-project/scan.sh .codex/skills/scan-project/scan.sh
-  chmod +x .codex/skills/scan-project/scan.sh 2>/dev/null || true
-  ok ".codex/skills/scan-project/ (mirrored for Codex CLI)"
-else
-  skip ".codex/skills/scan-project/"
+# ─────────────────────────────────────────────────────────────
+step "📄 verify-project skill"
+
+write_file ".claude/skills/verify-project/SKILL.md" << 'VERIFYSKILL_EOF'
+---
+name: verify-project
+description: Detect recurring Flutter/Firebase architecture risks and run safe local validation for Flutter plus optional Node backends. Use before finishing code changes, after bug fixes, or when repeated regressions suggest ownership, async ordering, schema parity, idempotency, layout, tests, analysis, or backend checks may have been skipped.
+---
+
+# Verify Project
+
+Run the bundled script from the repository root:
+
+```bash
+bash .agents/skills/verify-project/scripts/verify.sh
+```
+
+The script does not auto-fix, deploy, migrate, or build releases. It runs
+the recurring-risk detector, formatting checks, `flutter analyze`, Flutter
+tests when present, and existing `check` scripts in `functions/` or `worker/`.
+The detector writes `.claude/PROJECT_RISKS.md`; errors fail verification while
+heuristic warnings stay visible for review. Report skipped checks as gaps.
+VERIFYSKILL_EOF
+
+write_file ".claude/skills/verify-project/scripts/detect-recurring-risks.sh" << 'RISKDETECTOR_EOF'
+#!/usr/bin/env bash
+set -o pipefail
+
+ROOT="."
+REPORT=""
+HOTSPOT_LINES="${RISK_HOTSPOT_LINES:-600}"
+
+usage() {
+  cat <<'USAGE_EOF'
+Detect recurring Flutter project risks without modifying application code.
+
+Usage:
+  bash detect-recurring-risks.sh [--root PATH] [--report PATH]
+
+Options:
+  --root PATH       Project root to inspect (default: current directory)
+  --report PATH     Report path (default: <root>/.claude/PROJECT_RISKS.md)
+  --hotspot-lines N Large Dart file threshold (default: 600)
+  -h, --help        Show this help
+USAGE_EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      [[ $# -gt 1 ]] || { printf 'Missing value for --root\n' >&2; exit 2; }
+      ROOT="$2"
+      shift
+      ;;
+    --report)
+      [[ $# -gt 1 ]] || { printf 'Missing value for --report\n' >&2; exit 2; }
+      REPORT="$2"
+      shift
+      ;;
+    --hotspot-lines)
+      [[ $# -gt 1 ]] || { printf 'Missing value for --hotspot-lines\n' >&2; exit 2; }
+      HOTSPOT_LINES="$2"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+[[ "$HOTSPOT_LINES" =~ ^[0-9]+$ ]] || {
+  printf 'Invalid --hotspot-lines value: %s\n' "$HOTSPOT_LINES" >&2
+  exit 2
+}
+
+ROOT="$(cd "$ROOT" 2>/dev/null && pwd -P)" || {
+  printf 'Project root does not exist: %s\n' "$ROOT" >&2
+  exit 2
+}
+
+if [[ -z "$REPORT" ]]; then
+  REPORT="$ROOT/.claude/PROJECT_RISKS.md"
+elif [[ "$REPORT" != /* ]]; then
+  REPORT="$ROOT/$REPORT"
 fi
+
+TMP_DIR="${TMPDIR:-/tmp}/flutter-agentkit-risks.$$"
+mkdir -p "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+ERRORS=()
+WARNINGS=()
+CHECKLIST=()
+
+add_error() {
+  ERRORS[${#ERRORS[@]}]="$1"
+}
+
+add_warning() {
+  WARNINGS[${#WARNINGS[@]}]="$1"
+}
+
+add_checklist() {
+  CHECKLIST[${#CHECKLIST[@]}]="$1"
+}
+
+relative_path() {
+  local path="$1"
+  case "$path" in
+    "$ROOT"/*) printf '%s' "${path#"$ROOT"/}" ;;
+    *) printf '%s' "$path" ;;
+  esac
+}
+
+append_grep_hits() {
+  local output="$1"
+  local pattern="$2"
+  shift 2
+  local file=""
+  local line=""
+  for file in "$@"; do
+    [[ -f "$file" ]] || continue
+    while IFS=: read -r line _; do
+      [[ -n "$line" ]] || continue
+      printf '%s:%s\n' "$(relative_path "$file")" "$line" >> "$output"
+    done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
+  done
+}
+
+append_code_grep_hits() {
+  local output="$1"
+  local pattern="$2"
+  shift 2
+  local file=""
+  local line=""
+  local source=""
+  for file in "$@"; do
+    [[ -f "$file" ]] || continue
+    while IFS=: read -r line source; do
+      [[ -n "$line" ]] || continue
+      if printf '%s\n' "$source" | grep -Eq '^[[:space:]]*(//|/\*|\*|#)'; then
+        continue
+      fi
+      printf '%s:%s\n' "$(relative_path "$file")" "$line" >> "$output"
+    done < <(grep -nE "$pattern" "$file" 2>/dev/null || true)
+  done
+}
+
+format_hits() {
+  local file="$1"
+  local total=0
+  local shown=0
+  local hit=""
+  local output=""
+  total="$(wc -l < "$file" | tr -d ' ')"
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    shown=$((shown + 1))
+    if [[ -n "$output" ]]; then
+      output="$output, "
+    fi
+    output="${output}\`${hit}\`"
+    [[ "$shown" -ge 5 ]] && break
+  done < "$file"
+  if [[ "$total" -gt "$shown" ]]; then
+    output="$output, and $((total - shown)) more"
+  fi
+  printf '%s' "$output"
+}
+
+DART_FILES=()
+if [[ -d "$ROOT/lib" ]]; then
+  while IFS= read -r file; do
+    DART_FILES[${#DART_FILES[@]}]="$file"
+  done < <(find "$ROOT/lib" -type f -name '*.dart' -not -path '*/build/*' | sort)
+fi
+
+CONFIG_FILES=()
+for config_path in \
+  "$ROOT/CLAUDE.md" \
+  "$ROOT/AGENTS.md" \
+  "$ROOT/lib/AGENTS.md"; do
+  [[ -f "$config_path" ]] && CONFIG_FILES[${#CONFIG_FILES[@]}]="$config_path"
+done
+for config_dir in \
+  "$ROOT/.claude/rules" \
+  "$ROOT/.claude/skills" \
+  "$ROOT/.claude/agents" \
+  "$ROOT/.agents" \
+  "$ROOT/.codex"; do
+  [[ -d "$config_dir" ]] || continue
+  while IFS= read -r file; do
+    CONFIG_FILES[${#CONFIG_FILES[@]}]="$file"
+  done < <(find "$config_dir" -type f \( -name '*.md' -o -name '*.toml' \) | sort)
+done
+
+STALE_HITS="$TMP_DIR/stale.txt"
+: > "$STALE_HITS"
+append_grep_hits "$STALE_HITS" 'custom JWT|Never run flutter test|dart fix --apply|\.Codex|AuthInterceptor' "${CONFIG_FILES[@]}"
+if [[ -s "$STALE_HITS" ]]; then
+  add_error "**CFG001 stale agent instructions:** unsafe or obsolete setup markers remain at $(format_hits "$STALE_HITS")."
+fi
+
+if [[ -f "$ROOT/pubspec.yaml" ]] && grep -Eq '^[[:space:]]*go_router:' "$ROOT/pubspec.yaml"; then
+  NAV_HITS="$TMP_DIR/navigation.txt"
+  : > "$NAV_HITS"
+  append_code_grep_hits "$NAV_HITS" 'Navigator\.(push|pushNamed)|MaterialPageRoute[[:space:]]*\(' "${DART_FILES[@]}"
+  if [[ -s "$NAV_HITS" ]]; then
+    add_error "**NAV001 navigation boundary:** direct Navigator/MaterialPageRoute calls bypass the configured go_router boundary at $(format_hits "$NAV_HITS")."
+  fi
+fi
+
+PRINT_HITS="$TMP_DIR/print.txt"
+: > "$PRINT_HITS"
+append_code_grep_hits "$PRINT_HITS" '(^|[^[:alnum:]_])print[[:space:]]*\(' "${DART_FILES[@]}"
+if [[ -s "$PRINT_HITS" ]]; then
+  add_error "**LOG001 production logging:** \`print()\` remains in Dart source at $(format_hits "$PRINT_HITS")."
+fi
+
+PRESENTATION_FILES=()
+for file in "${DART_FILES[@]}"; do
+  relative="$(relative_path "$file")"
+  case "$relative" in
+    */presentation/*|lib/shared/widgets/*)
+      PRESENTATION_FILES[${#PRESENTATION_FILES[@]}]="$file"
+      ;;
+  esac
+done
+
+CLIENT_HITS="$TMP_DIR/direct-clients.txt"
+: > "$CLIENT_HITS"
+append_code_grep_hits "$CLIENT_HITS" '(^|[^[:alnum:]_])Dio[[:space:]]*\(|Firebase(Auth|Firestore)\.instance|Hive\.(openBox|box)[[:space:]]*\(|http\.Client[[:space:]]*\(' "${PRESENTATION_FILES[@]}"
+if [[ -s "$CLIENT_HITS" ]]; then
+  add_warning "**ARCH001 presentation integration boundary (heuristic):** widgets/screens construct network, Firebase, or storage clients at $(format_hits "$CLIENT_HITS"). Move construction to the existing data/infrastructure boundary."
+fi
+
+ASYNC_HITS="$TMP_DIR/async-cleanup.txt"
+: > "$ASYNC_HITS"
+append_code_grep_hits "$ASYNC_HITS" 'await[[:space:]]+_[[:alnum:]_]*(cancel|cleanup|cleanUp|close|dispose)[[:alnum:]_]*[[:space:]]*\(' "${DART_FILES[@]}"
+if [[ -s "$ASYNC_HITS" ]]; then
+  add_warning "**ASYNC001 visible-state ordering (heuristic):** awaited cleanup helpers appear at $(format_hits "$ASYNC_HITS"). In sign-out/reset flows, publish visible state before slow cleanup when safe."
+fi
+
+SAFE_AREA_HITS="$TMP_DIR/safe-area.txt"
+: > "$SAFE_AREA_HITS"
+for file in "${PRESENTATION_FILES[@]}"; do
+  base="$(basename "$file")"
+  case "$base" in
+    *screen*.dart|*page*.dart)
+      append_code_grep_hits "$SAFE_AREA_HITS" 'top[[:space:]]*:[[:space:]]*false' "$file"
+      ;;
+  esac
+done
+if [[ -s "$SAFE_AREA_HITS" ]]; then
+  add_warning "**UI001 system inset boundary (heuristic):** page/screen files contain \`SafeArea(top: false)\` at $(format_hits "$SAFE_AREA_HITS"). Confirm each use is modal-only and test full-page routes with top/bottom insets."
+fi
+
+HOTSPOTS="$TMP_DIR/hotspots.txt"
+: > "$HOTSPOTS"
+for file in "${DART_FILES[@]}"; do
+  lines="$(wc -l < "$file" | tr -d ' ')"
+  if [[ "$lines" -ge "$HOTSPOT_LINES" ]]; then
+    printf '%s\t%s\n' "$lines" "$(relative_path "$file")" >> "$HOTSPOTS"
+  fi
+done
+sort -nr "$HOTSPOTS" -o "$HOTSPOTS"
+if [[ -s "$HOTSPOTS" ]]; then
+  hotspot_count="$(wc -l < "$HOTSPOTS" | tr -d ' ')"
+  hotspot_summary=""
+  shown=0
+  while IFS=$'\t' read -r lines path; do
+    shown=$((shown + 1))
+    [[ -n "$hotspot_summary" ]] && hotspot_summary="$hotspot_summary, "
+    hotspot_summary="${hotspot_summary}\`${path}\` (${lines})"
+    [[ "$shown" -ge 8 ]] && break
+  done < "$HOTSPOTS"
+  [[ "$hotspot_count" -gt "$shown" ]] && hotspot_summary="$hotspot_summary, and $((hotspot_count - shown)) more"
+  add_warning "**SIZE001 large Dart hotspots:** $hotspot_count files are at or above $HOTSPOT_LINES lines: $hotspot_summary. Avoid adding responsibilities without extracting a testable seam."
+fi
+
+PROVIDER_HOTSPOTS="$TMP_DIR/provider-hotspots.txt"
+: > "$PROVIDER_HOTSPOTS"
+while IFS=$'\t' read -r lines path; do
+  case "$path" in
+    *provider*.dart|*/providers/*) printf '%s\t%s\n' "$lines" "$path" >> "$PROVIDER_HOTSPOTS" ;;
+  esac
+done < "$HOTSPOTS"
+provider_hotspot_count="$(wc -l < "$PROVIDER_HOTSPOTS" | tr -d ' ')"
+if [[ "$provider_hotspot_count" -ge 2 ]]; then
+  provider_names=""
+  while IFS=$'\t' read -r _ path; do
+    [[ -n "$provider_names" ]] && provider_names="$provider_names, "
+    provider_names="${provider_names}\`${path}\`"
+  done < "$PROVIDER_HOTSPOTS"
+  add_warning "**STATE001 duplicate/stale ownership risk:** multiple large providers coordinate shared state ($provider_names). Name one authoritative owner per field and test derived mirrors in both update directions."
+fi
+
+PROVIDER_TEST_GAPS="$TMP_DIR/provider-test-gaps.txt"
+: > "$PROVIDER_TEST_GAPS"
+while IFS=$'\t' read -r _ path; do
+  provider_base="$(basename "$path" .dart)"
+  provider_test_found=0
+  for test_dir in "$ROOT/test" "$ROOT/integration_test"; do
+    [[ -d "$test_dir" ]] || continue
+    if find "$test_dir" -type f -name "${provider_base}*_test.dart" -print -quit | grep -q .; then
+      provider_test_found=1
+      break
+    fi
+  done
+  if [[ "$provider_test_found" -eq 0 ]]; then
+    printf '%s\n' "$path" >> "$PROVIDER_TEST_GAPS"
+  fi
+done < "$PROVIDER_HOTSPOTS"
+if [[ -s "$PROVIDER_TEST_GAPS" ]]; then
+  add_warning "**STATE002 provider hotspot test gap (heuristic):** no focused filename-matching test was found for $(format_hits "$PROVIDER_TEST_GAPS"). Add ownership/lifecycle tests before extending these coordinators, or document the existing differently named coverage."
+fi
+
+flutter_test_count=0
+for test_dir in "$ROOT/test" "$ROOT/integration_test"; do
+  [[ -d "$test_dir" ]] || continue
+  count="$(find "$test_dir" -type f -name '*_test.dart' | wc -l | tr -d ' ')"
+  flutter_test_count=$((flutter_test_count + count))
+done
+if [[ -f "$ROOT/pubspec.yaml" && "$flutter_test_count" -eq 0 ]]; then
+  add_warning "**TEST001 missing Flutter regression suite:** no \`*_test.dart\` files were found under \`test/\` or \`integration_test/\`. Repeated state, compatibility, and layout fixes have no automated Flutter gate."
+fi
+
+if [[ -f "$ROOT/firestore.rules" ]]; then
+  RULE_TEST_SIGNAL="$TMP_DIR/rules-test-signal.txt"
+  : > "$RULE_TEST_SIGNAL"
+  for search_root in "$ROOT/functions" "$ROOT/test" "$ROOT/integration_test"; do
+    [[ -d "$search_root" ]] || continue
+    while IFS= read -r file; do
+      if grep -Eiq '@firebase/rules-unit-testing|RulesTestEnvironment|emulators:exec.*firestore|firestore[_-]?rules' "$file" 2>/dev/null; then
+        printf '%s\n' "$file" >> "$RULE_TEST_SIGNAL"
+      fi
+    done < <(find "$search_root" -type f \
+      -not -path '*/node_modules/*' \
+      \( -name 'package.json' -o -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.ts' \))
+  done
+  if [[ ! -s "$RULE_TEST_SIGNAL" ]]; then
+    add_warning "**RULES001 missing Firestore Rules regression suite:** \`firestore.rules\` exists, but no emulator/rules test signal was found. Cover role, ownership, status, and multi-document write scenarios."
+  fi
+fi
+
+for package_dir in functions worker; do
+  package_json="$ROOT/$package_dir/package.json"
+  [[ -f "$package_json" ]] || continue
+  check_script=""
+  test_script=""
+  if command -v node >/dev/null 2>&1; then
+    check_script="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(p.scripts?.check || "")' "$package_json" 2>/dev/null || true)"
+    test_script="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(p.scripts?.test || "")' "$package_json" 2>/dev/null || true)"
+  else
+    check_script="$(grep -E '"'"'check'"'"[[:space:]]*:' "$package_json" 2>/dev/null | head -n 1 || true)"
+    test_script="$(grep -E '"'"'test'"'"[[:space:]]*:' "$package_json" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -z "$check_script" ]]; then
+    add_warning "**BACKEND001 missing backend check:** \`$package_dir/package.json\` has no \`check\` script, so verify-project cannot validate this backend."
+  elif ! printf '%s' "$check_script" | grep -Eiq '(^|[[:space:]&])(test|jest|vitest|mocha|tap)([[:space:]&:]|$)|node[[:space:]]+--test|emulators:exec'; then
+    add_warning "**BACKEND002 syntax-only backend check:** \`$package_dir\` check is \`$check_script\` and has no behavioral test signal."
+  fi
+  if [[ "$package_dir" == "functions" ]] \
+    && printf '%s' "$check_script" | grep -Eiq 'test:rules|emulators:exec' \
+    && ! printf '%s %s' "$check_script" "$test_script" | grep -Eiq 'node[[:space:]]+--test|jest|vitest|mocha|tap|test:(unit|functions|handlers|domain)|npm[[:space:]]+(run[[:space:]]+)?test([[:space:]&]|$)'; then
+    add_warning "**BACKEND003 Functions handler test gap:** the check covers Rules/emulator behavior but no callable, trigger, or scheduled-handler test signal was found."
+  fi
+done
+
+BATCH_HITS="$TMP_DIR/batch-without-transaction.txt"
+: > "$BATCH_HITS"
+for source_root in "$ROOT/lib" "$ROOT/functions" "$ROOT/worker/src"; do
+  [[ -d "$source_root" ]] || continue
+  while IFS= read -r file; do
+    if grep -Eq '\.batch[[:space:]]*\(|writeBatch[[:space:]]*\(' "$file" 2>/dev/null \
+      && ! grep -Eq 'runTransaction|\.transaction[[:space:]]*\(' "$file" 2>/dev/null; then
+      printf '%s\n' "$(relative_path "$file")" >> "$BATCH_HITS"
+    fi
+  done < <(find "$source_root" -type f \
+    -not -path '*/node_modules/*' \
+    -not -path '*/test/*' \
+    \( -name '*.dart' -o -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.ts' \))
+done
+if [[ -s "$BATCH_HITS" ]]; then
+  add_warning "**TXN001 read-dependent write risk (heuristic):** batch writes without a visible transaction occur in $(format_hits "$BATCH_HITS"). Verify status/ownership preconditions are not read-dependent or move the invariant into a transaction/server boundary."
+fi
+
+AUTO_ID_HITS="$TMP_DIR/retry-auto-id.txt"
+: > "$AUTO_ID_HITS"
+for source_root in "$ROOT/functions" "$ROOT/worker/src"; do
+  [[ -d "$source_root" ]] || continue
+  while IFS= read -r file; do
+    if grep -Eiq 'schedule|retry|reminder|queue' "$file" 2>/dev/null \
+      && grep -Eq 'collection[[:space:]]*\([^)]*\)[[:space:]]*\.add[[:space:]]*\(' "$file" 2>/dev/null; then
+      printf '%s\n' "$(relative_path "$file")" >> "$AUTO_ID_HITS"
+    fi
+  done < <(find "$source_root" -type f \
+    -not -path '*/node_modules/*' \
+    -not -path '*/test/*' \
+    \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.ts' \))
+done
+if [[ -s "$AUTO_ID_HITS" ]]; then
+  add_warning "**IDEMP001 retry/idempotency risk (heuristic):** scheduled/retry code appears to create auto-ID documents in $(format_hits "$AUTO_ID_HITS"). Prefer deterministic IDs and status preconditions."
+fi
+
+if [[ -f "$ROOT/firestore.rules" || -d "$ROOT/functions" || -d "$ROOT/worker" ]]; then
+  add_checklist "**Cross-system contracts:** when a persisted field or role changes, update Dart models/entities, backend validation, Firestore Rules, tolerant defaults, migrations, and contract/emulator tests together."
+fi
+if [[ "${#DART_FILES[@]}" -gt 0 ]]; then
+  add_checklist "**State/lifecycle:** name one authoritative owner for shared state; publish user-visible auth/navigation state before optional cleanup; cover slow or failing cleanup."
+  add_checklist "**Legacy compatibility:** test older Firestore/Hive/in-memory objects when adding required fields; use tolerant reads/defaults plus an explicit migration path."
+  add_checklist "**Mobile layout:** for changed full-page UI, verify compact widths, dense content, keyboard insets, and both system bars; reserve \`SafeArea(top: false)\` for intentional modal behavior."
+fi
+if [[ -d "$ROOT/functions" || -d "$ROOT/worker" ]]; then
+  add_checklist "**Cloud mutations:** protect multi-document invariants with transactions/status preconditions and make scheduled/retryable work idempotent with deterministic keys."
+fi
+
+mkdir -p "$(dirname "$REPORT")"
+REPORT_TMP="$TMP_DIR/report.md"
+{
+  printf '# PROJECT_RISKS.md\n\n'
+  printf '> Generated: %s by `detect-recurring-risks.sh`\n' "$(date +%Y-%m-%d)"
+  printf '> Machine-owned heuristic report; regenerate instead of hand-editing.\n'
+  printf '> Errors are deterministic project-rule violations. Warnings require human/agent review and may be intentional.\n\n'
+  printf '## Summary\n\n'
+  printf -- '- Errors: %s\n' "${#ERRORS[@]}"
+  printf -- '- Warnings: %s\n' "${#WARNINGS[@]}"
+  printf -- '- Flutter tests detected: %s\n' "$flutter_test_count"
+  printf -- '- Large-file threshold: %s lines\n\n' "$HOTSPOT_LINES"
+  printf '## Errors\n\n'
+  if [[ "${#ERRORS[@]}" -eq 0 ]]; then
+    printf -- '- None.\n'
+  else
+    for finding in "${ERRORS[@]}"; do
+      printf -- '- %s\n' "$finding"
+    done
+  fi
+  printf '\n## Warnings\n\n'
+  if [[ "${#WARNINGS[@]}" -eq 0 ]]; then
+    printf -- '- None.\n'
+  else
+    for finding in "${WARNINGS[@]}"; do
+      printf -- '- %s\n' "$finding"
+    done
+  fi
+  printf '\n## Prevention Checklist\n\n'
+  if [[ "${#CHECKLIST[@]}" -eq 0 ]]; then
+    printf -- '- No optional integration surfaces detected.\n'
+  else
+    for item in "${CHECKLIST[@]}"; do
+      printf -- '- %s\n' "$item"
+    done
+  fi
+  printf '\n## Required Agent Response\n\n'
+  printf -- '- Read this report before editing a flagged area.\n'
+  printf -- '- For each relevant warning, state why it is safe or add a regression guard.\n'
+  printf -- '- Re-run `bash .agents/skills/verify-project/scripts/verify.sh` before finishing.\n'
+} > "$REPORT_TMP"
+mv "$REPORT_TMP" "$REPORT"
+
+printf 'Recurring-risk scan: %s error(s), %s warning(s).\n' "${#ERRORS[@]}" "${#WARNINGS[@]}"
+printf 'Report: %s\n' "$REPORT"
+
+if [[ "${#ERRORS[@]}" -gt 0 ]]; then
+  exit 1
+fi
+RISKDETECTOR_EOF
+chmod +x .claude/skills/verify-project/scripts/detect-recurring-risks.sh 2>/dev/null || true
+
+write_file ".claude/skills/verify-project/scripts/verify.sh" << 'VERIFYSCRIPT_EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+
+FAILED=0
+
+run_check() {
+  local label="$1"
+  shift
+  printf '\n▶ %s\n' "$label"
+  if "$@"; then
+    printf '✓ %s\n' "$label"
+  else
+    printf '✗ %s\n' "$label"
+    FAILED=1
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [[ -f "$SCRIPT_DIR/detect-recurring-risks.sh" ]]; then
+  run_check "Recurring-risk detector" bash "$SCRIPT_DIR/detect-recurring-risks.sh"
+else
+  printf '\n✗ Recurring-risk detector is missing. Re-run AgentKit setup with --force.\n'
+  FAILED=1
+fi
+
+if command -v dart >/dev/null 2>&1 && [[ -d lib ]]; then
+  format_paths=(lib)
+  [[ -d test ]] && format_paths+=(test)
+  run_check "Dart formatting" dart format --output=none --set-exit-if-changed "${format_paths[@]}"
+fi
+
+if command -v flutter >/dev/null 2>&1 && [[ -f pubspec.yaml ]]; then
+  run_check "Flutter analyze" flutter analyze
+  if [[ -d test ]] && find test -type f -name '*_test.dart' -print -quit | grep -q .; then
+    run_check "Flutter tests" flutter test
+  else
+    printf '\n! Flutter tests skipped: no *_test.dart files found.\n'
+  fi
+fi
+
+for package_dir in functions worker; do
+  if [[ -f "$package_dir/package.json" ]] && command -v npm >/dev/null 2>&1; then
+    if node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.exit(p.scripts?.check ? 0 : 1)' "$package_dir/package.json"; then
+      run_check "$package_dir check" npm --prefix "$package_dir" run check
+    fi
+  fi
+done
+
+if [[ "$FAILED" -ne 0 ]]; then
+  printf '\nProject verification failed.\n'
+  exit 1
+fi
+
+printf '\nProject verification passed.\n'
+VERIFYSCRIPT_EOF
+chmod +x .claude/skills/verify-project/scripts/*.sh 2>/dev/null || true
+
+# Mirror project skills to the current Codex location and the legacy location.
+for skill_name in scan-project verify-project; do
+  for skills_root in .agents/skills .codex/skills; do
+    target="$skills_root/$skill_name"
+    if [[ "$FORCE" -eq 1 || ! -d "$target" ]]; then
+      rm -rf "$target"
+      mkdir -p "$target"
+      cp -R ".claude/skills/$skill_name/." "$target/"
+      find "$target" -type f -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+      ok "$target/"
+    else
+      skip "$target/"
+    fi
+  done
+done
 
 # ─────────────────────────────────────────────────────────────
 step "📄 AGENTS.md (Codex CLI / Cursor / Windsurf compatible)"
@@ -1871,22 +2384,30 @@ write_file "AGENTS.md" << 'AGENTSMD_EOF'
 # Flutter Project — Agent Instructions
 
 ## Stack
-- Flutter stable / Dart 3.x · Provider + ChangeNotifier · go_router · Dio · Hive · custom JWT
+- Flutter / Dart. `pubspec.yaml`, bootstrap code, and `.claude/PROJECT_MAP.md`
+  describe the current stack; do not assume auth, storage, or backend choices.
+- New AgentKit projects use Provider + ChangeNotifier and go_router by default.
 
 ## Commands
 - `flutter run` / `flutter run --release`
 - `flutter analyze` — lint (must be clean before finishing any task)
-- `dart fix --apply` — auto fix
+- `dart format --output=none --set-exit-if-changed lib test`
+- `flutter test` — run when tests exist or behavior changed
 - `flutter pub get`
-- Never run `flutter build` or `flutter test` unless explicitly asked
+- `bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh` — refresh risk signals
+- `bash .agents/skills/verify-project/scripts/verify.sh` — safe validation suite
+- Run release builds only when the task requires them.
 
 ## Before every task
 1. Read `.claude/PROJECT_MAP.md` for the actual current structure.
    If missing or stale, run: `bash .claude/skills/scan-project/scan.sh`
-2. For deeper detail read `.claude/reference/patterns.md` (code patterns) or
+2. Read `.claude/PROJECT_RISKS.md`. If missing, run:
+   `bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh`
+   Treat errors as blockers and warnings as required heuristic review.
+3. For deeper detail read `.claude/reference/patterns.md` (code patterns) or
    `.claude/reference/api.md` (endpoints) as needed — these are shared,
    tool-agnostic docs, not Claude-specific.
-3. Check `.claude/context/known-issues.md` before touching a fragile area.
+4. Check `.claude/context/known-issues.md` before touching a fragile area.
 
 ## Folder layout
 ```
@@ -1900,14 +2421,20 @@ Domain never imports data or presentation. Data never imports presentation.
 See `.claude/rules/structure.md` for full naming conventions.
 
 ## Non-negotiable rules
-- Do not add, move, or delete folders without asking the user first.
+- Follow the existing structure; ask before broad architecture or migration changes.
 - Do not add packages to `pubspec.yaml` without explicit approval.
 - Do not introduce Riverpod, BLoC, or GetX — Provider only.
 - Do not use `Navigator.push` — use `context.go()` / `context.push()` (go_router only).
-- Do not hardcode colors, font sizes, or spacing — use `Theme.of(context)`.
+- Feature UI uses theme/tokens; literal visual tokens belong in theme files.
 - Dispose every controller/subscription in `dispose()`.
 - No `print()` — `debugPrint()` only, removed before finishing.
-- Repositories return `Either<Failure, T>` — never throw to providers.
+- Keep widgets away from direct network/Firebase/storage client construction.
+- Name one authoritative owner for shared state; derive mirrors instead of
+  maintaining duplicate mutable copies across providers.
+- When persisted fields or roles change, update client models, backend checks,
+  database Rules, tolerant defaults/migrations, and tests as one contract.
+- Full-page routes preserve both system insets; `SafeArea(top: false)` is only
+  for an intentional modal boundary and requires compact/inset verification.
 
 Full Flutter/Dart coding rules (Provider patterns, lifecycle, navigation,
 style, API conventions): see `lib/AGENTS.md`, scoped automatically to the
@@ -1915,6 +2442,9 @@ style, API conventions): see `lib/AGENTS.md`, scoped automatically to the
 
 ## After completing a task
 - Re-run `bash .claude/skills/scan-project/scan.sh` if structure changed.
+- Run `bash .agents/skills/verify-project/scripts/verify.sh`.
+- Add a regression test for bug fixes when a stable seam exists; otherwise
+  document the exact manual verification and missing seam.
 - State root cause explicitly for bug fixes.
 - Keep changes minimal and scoped to the request.
 AGENTSMD_EOF
@@ -1925,20 +2455,33 @@ if [[ -d lib ]]; then
 > Scoped to lib/ — merged after root AGENTS.md for any work inside this tree.
 
 ## Provider
-- Extend `ChangeNotifier`. Always call `notifyListeners()` after mutating state.
+- Use `ChangeNotifier` for shared presentation state and notify only after the
+  observable state is internally consistent.
+- Name one authoritative owner for each shared field. Other providers expose
+  derived/read-only views instead of stale mutable mirrors.
 - Keep `_isLoading`, `_error`, and domain state as private fields with public getters.
-- Use `Consumer<T>` for scoped rebuilds. Use `context.read<T>()` only in callbacks.
-- Never call `context.watch` or `context.read` in a method called during `build`.
+- Use `Consumer<T>` or `Selector<T, R>` for scoped rebuilds.
+- Use `context.read<T>()` for one-time access; do not mutate providers during build.
 
 ## Widgets
 - Prefer `StatelessWidget` + Provider over `StatefulWidget`.
 - Always use `const` constructors where possible.
 - Break `build` methods longer than ~40 lines into private `_build*` methods.
-- Never call `setState` in a large widget — push state to the Provider layer.
+- Keep ephemeral UI state local; move shared or domain state to Provider.
+- Full-page routes preserve top and bottom system insets. Use
+  `SafeArea(top: false)` only for intentional modal content and verify compact widths.
 
 ## Lifecycle
 - Dispose every `TextEditingController`, `AnimationController`, `StreamSubscription`.
-- Add `if (!mounted) return;` after every `await` inside a `StatefulWidget`.
+- After `await`, check `mounted` before using `State`, `context`, or controllers.
+- In sign-out/reset flows, publish visible state before awaiting optional slow
+  cleanup when detaching cleanup is safe.
+
+## Persistence compatibility
+- Treat Flutter models, backend validation, database Rules, defaults, and
+  migrations as one contract when persisted fields or roles change.
+- Keep reads tolerant of older Firestore/Hive/in-memory objects and cover an
+  old-data fixture before making a field required.
 
 ## Navigation
 - `context.go()` for root/tab navigation. `context.push()` when back is needed.
@@ -1948,20 +2491,53 @@ if [[ -d lib ]]; then
 - Always `ListView.builder` or `SliverList` for dynamic lists.
 
 ## API
-- Use the shared Dio client from `lib/core/network/`. Never instantiate Dio in a feature.
+- Use the existing integration boundary. Never instantiate HTTP, Firebase,
+  database, or storage clients in widgets.
 - `FormData` + `MultipartFile` for uploads — never base64 in JSON.
 
 ## Bug fix protocol
 Diagnose layer first: widget → provider → usecase → repository → network.
-Common causes: missing `notifyListeners()`, missing `mounted` check, provider
-outside `MultiProvider` tree, `notifyListeners()` called during build phase.
-Trace data path fully before editing. Minimal fix only — no surrounding refactors.
+Trace the full data path before editing. Check duplicate sources of truth,
+async ordering, retry/idempotency, schema/rules drift, and lifecycle safety.
+Keep the fix focused and add a regression test when feasible.
 
 ## Code hygiene
-No `print()`. Remove `debugPrint` before finishing. `dart fix --apply` clean.
+No `print()`. Remove temporary `debugPrint`. Run the project verification skill.
 LIBAGENTS_EOF
 else
   warn "No lib/ directory — skipping lib/AGENTS.md (run setup again after creating a Flutter project)"
+fi
+
+if [[ -d functions ]]; then
+  write_file "functions/AGENTS.md" << 'FUNCTIONSAGENTS_EOF'
+# Backend Function Rules
+
+- Treat backend functions as server-authoritative for privileged mutations.
+- Validate authentication, role, ownership, membership, and current status server-side.
+- Use transactions plus status/ownership preconditions for read-dependent,
+  multi-document invariants; use batches only when no read precondition exists.
+- Make scheduled and retryable work idempotent, preferably with deterministic IDs.
+- Keep backend validation, client models, and database security rules aligned.
+- Preserve compatibility for existing documents when adding required fields.
+- Run the package `check` script when present.
+- Never deploy functions or mutate production data unless explicitly asked.
+FUNCTIONSAGENTS_EOF
+fi
+
+if [[ -d worker ]]; then
+  write_file "worker/AGENTS.md" << 'WORKERAGENTS_EOF'
+# Worker / API Rules
+
+- Treat the Worker and its client as one versioned request/response contract.
+- Validate and normalize input at the boundary; return stable error codes/messages.
+- Do not expose secrets, upstream payloads, or internal errors.
+- Keep retries, rate limits, and upstream failures explicit and user-safe.
+- Protect read-dependent multi-write state transitions with explicit status
+  preconditions, and make retryable work idempotent with deterministic keys.
+- Update client parsing and Worker response shapes together.
+- Run the package `check` script when present.
+- Never deploy or change production secrets unless explicitly asked.
+WORKERAGENTS_EOF
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -1973,13 +2549,26 @@ else
   warn "No lib/ directory — skipping scan. Run 'bash .claude/skills/scan-project/scan.sh' after source code exists."
 fi
 
+step "🛡️ Detecting recurring project risks (automatically, now)"
+if [[ -f .agents/skills/verify-project/scripts/detect-recurring-risks.sh ]]; then
+  if bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh; then
+    ok ".claude/PROJECT_RISKS.md regenerated"
+  else
+    warn "Blocking project-rule violations detected. Review .claude/PROJECT_RISKS.md."
+  fi
+else
+  warn "Risk detector missing — run setup again with --force."
+fi
+
 # ─────────────────────────────────────────────────────────────
 step "✅ Setup complete"
-TOTAL_FILES=$(find .claude AGENTS.md CLAUDE.md -type f 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_FILES=$(find .claude .agents .codex AGENTS.md CLAUDE.md -type f 2>/dev/null | wc -l | tr -d ' ')
 log "Created or checked $TOTAL_FILES files."
 log ""
 log "Claude Code  → reads CLAUDE.md (automatically @imports .claude/rules/*)"
-log "Codex CLI    → reads AGENTS.md (root) + lib/AGENTS.md (scoped)"
+log "Codex         → reads AGENTS.md + lib/AGENTS.md + .agents/skills/*"
 log ""
 log "Re-scan anytime:      bash .claude/skills/scan-project/scan.sh"
+log "Refresh risk report:   bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh"
+log "Verify changes:        bash .agents/skills/verify-project/scripts/verify.sh"
 log "Overwrite agent config: bash setup-agent-config.sh --existing . --force"

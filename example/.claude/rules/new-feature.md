@@ -14,7 +14,7 @@ Before writing any code, confirm in `.claude/PROJECT_MAP.md`:
 
 **2. Data** — `lib/features/<name>/data/`
 - [ ] Model: `fromJson`, `toJson`, `toEntity()`
-- [ ] Remote source: calls Dio client, returns models
+- [ ] Source: uses the project's existing HTTP/Firebase/storage boundary
 - [ ] Repository impl: wraps source in try/catch, returns `Either`
 
 **3. Presentation** — `lib/features/<name>/presentation/`
@@ -33,4 +33,5 @@ Before writing any code, confirm in `.claude/PROJECT_MAP.md`:
 - [ ] No `Navigator.push` — use `context.go` / `context.push`
 - [ ] No `print()` or leftover `debugPrint`
 - [ ] All three states (loading / error / content) handled in every screen
-- [ ] `dart fix --apply` clean
+- [ ] Targeted tests added or updated
+- [ ] `bash .agents/skills/verify-project/scripts/verify.sh` passes

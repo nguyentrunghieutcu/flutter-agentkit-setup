@@ -148,22 +148,33 @@ your-project/
 |  `- AGENTS.md
 |- .claude/
 |  |- PROJECT_MAP.md
+|  |- PROJECT_RISKS.md
 |  |- rules/
 |  |- reference/
 |  |- context/
 |  |- skills/scan-project/
+|  |- skills/verify-project/
 |  |- prompts/
 |  |- snippets/
 |  |- agents/
 |  `- memory/
+|- .agents/
+|  `- skills/{scan-project,verify-project}/
 `- .codex/
-   `- skills/scan-project/
+   |- agents/code-reviewer.toml
+   `- skills/{scan-project,verify-project}/  # legacy compatibility
 ```
 
 - **Claude Code** reads `CLAUDE.md` and imports rules from `.claude/rules/`.
-- **Codex CLI, Cursor, and Windsurf** read `AGENTS.md` and `lib/AGENTS.md`.
+- **Codex** reads `AGENTS.md`, `lib/AGENTS.md`, and repo skills from
+  `.agents/skills/`.
+- `.codex/skills/` is retained only for older Codex installations.
 - `.claude/PROJECT_MAP.md` is generated from the actual filesystem with `find`,
-  `grep`, and `pubspec.yaml`; it is never guessed by an agent.
+  `grep`, and `pubspec.yaml`; it is never guessed by an agent. Manual project
+  notes stay in `.claude/context/` so a re-scan cannot erase them.
+- `.claude/PROJECT_RISKS.md` is machine-generated. Deterministic violations
+  fail verification; heuristic ownership, async, schema/rules, idempotency,
+  testing, layout, and hotspot signals remain warnings for agent review.
 
 ## 5. Re-scan after source changes
 
@@ -173,6 +184,21 @@ bash .claude/skills/scan-project/scan.sh
 
 There is no need to run the full setup again.
 
+Run the non-destructive verification workflow before finishing code changes:
+
+```bash
+bash .agents/skills/verify-project/scripts/verify.sh
+```
+
+Refresh only recurring-risk signals without running Flutter/backend checks:
+
+```bash
+bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh
+```
+
+The setup script runs both the project scan and risk detector automatically.
+Agents are instructed to read both generated files before editing fragile areas.
+
 ## 6. Overwrite agent configuration
 
 ```bash
@@ -180,7 +206,9 @@ bash setup-agent-config.sh --existing . --force
 ```
 
 By default, the script does not overwrite existing agent configuration files.
-Use `--force` to reset the files managed by the setup.
+Use `--force` to refresh managed instructions and skills. Project-owned files
+under `.claude/context/` and `.claude/reference/` remain untouched so upgrade
+runs cannot erase known issues, changelog entries, or integration contracts.
 
 ## 7. Run in CI
 

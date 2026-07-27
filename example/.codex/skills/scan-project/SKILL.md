@@ -1,12 +1,12 @@
 ---
-description: Scans the Flutter project source and regenerates .claude/PROJECT_MAP.md. Invoke when PROJECT_MAP.md is missing or more than 7 days old.
-user-invocable: true
+name: scan-project
+description: Regenerate the Flutter project navigation map from the real filesystem and configuration. Use when PROJECT_MAP.md is missing or stale, after structural changes, or when an agent needs a reliable inventory of features, backends, tests, routes, providers, and large files.
 ---
 
 # Scan Project
 
-Runs a real filesystem scan and regenerates `.claude/PROJECT_MAP.md` from
-actual source — never guess or hand-write this file.
+Run the scanner and treat its output as a generated navigation index. Verify
+implementation details in the source before editing them.
 
 ## Run it directly (fastest — no LLM tokens needed)
 ```bash
@@ -15,9 +15,9 @@ bash .claude/skills/scan-project/scan.sh
 
 ## If asked to do it manually instead, follow these steps
 
-**1. Scan source tree**
+**1. Scan source tree and backends**
 ```bash
-find lib/ -type f -name "*.dart" | grep -v ".g.dart\|.freezed.dart\|.mocks.dart" | sort
+find lib functions worker -type f 2>/dev/null | sort
 ```
 
 **2. Scan dependencies**
@@ -45,6 +45,5 @@ grep -rn "GoRoute" lib/core/router/ --include="*.dart"
 find lib/shared/widgets/ -name "*.dart" | sort
 ```
 
-**7. Write `.claude/PROJECT_MAP.md`** — fill every table with real data.
-Never leave placeholder rows. Report: feature count, provider count, any
-structural anomalies noticed.
+**7. Write `.claude/PROJECT_MAP.md`** — generated content only. Keep manual
+notes in `.claude/context/known-issues.md` and `.claude/context/changelog.md`.

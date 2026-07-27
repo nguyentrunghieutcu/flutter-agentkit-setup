@@ -1,69 +1,38 @@
-# API Reference
+# Integration Reference
 
-> Read before writing any API call, creating a model, or handling HTTP errors.
-> Update this file whenever a new endpoint is integrated.
+> Routing index for external systems. Verify every claim against the current
+> source and configuration before editing an integration.
 
-## HTTP Client
+## Source of Truth
 
-File: `lib/core/network/api_client.dart`
-Base URL: `AppConstants.baseUrl` in `lib/core/constants/app_constants.dart`
-Auth: Bearer token injected by `AuthInterceptor` — do not add headers manually.
-Errors: handled centrally in `ApiErrorInterceptor` — do not wrap calls in try/catch in providers.
+- Dependencies: `pubspec.yaml`
+- App bootstrap and client construction: `lib/main.dart`, `lib/app.dart`
+- HTTP clients: `lib/core/network/`
+- Firebase setup: `firebase.json`, `firestore.rules`, `functions/` when present
+- Other backends/workers: inspect their package and deployment config
 
-```dart
-class ProductRemoteSource {
-  final ApiClient _client;
-  ProductRemoteSource(this._client);
+## Integration Inventory
 
-  Future<List<ProductModel>> getProducts() async {
-    final response = await _client.get('/products');
-    return (response.data['data'] as List)
-        .map((e) => ProductModel.fromJson(e))
-        .toList();
-  }
-}
-```
-
-## Response envelope
-
-```json
-{ "success": true, "data": {}, "message": "OK", "errors": null }
-```
-
-Paginated:
-```json
-{ "data": [], "meta": { "current_page": 1, "last_page": 5, "per_page": 20, "total": 98 } }
-```
-
-## File upload
-
-```dart
-final formData = FormData.fromMap({
-  'avatar': await MultipartFile.fromFile(path, filename: 'avatar.jpg'),
-  'user_id': userId,
-});
-await _client.post('/user/avatar', data: formData);
-```
-
-Never embed file bytes as base64 in a JSON body.
-
-## Endpoint Registry
-
-### Auth
-| Method | Path | Body | Returns |
+| System | Client / Source | Auth | Contract owner |
 |---|---|---|---|
-| POST | `/auth/login` | `{email, password}` | `{token, user}` |
-| POST | `/auth/logout` | — | `{message}` |
-| GET | `/auth/me` | — | `UserModel` |
-| POST | `/auth/refresh` | `{refresh_token}` | `{token}` |
+| HTTP API | Inspect `lib/core/network/` | Verify interceptor/client | Backend route/schema |
+| Firebase | Inspect app bootstrap and repositories | Firebase Auth / Rules | `firestore.rules`, Functions |
+| Local storage | Inspect data sources | Device-local | Models and migration code |
 
-> Add feature endpoints below as they are integrated.
+Replace these generic rows with project-specific paths after the first scan.
 
-## HTTP Error Codes
+## Change Checklist
 
-| Status | Meaning | Handled by |
-|---|---|---|
-| 401 | Unauthenticated | Interceptor → redirect to login |
-| 403 | Forbidden | Show error, do not redirect |
-| 422 | Validation | Parse `errors` field, show per-field |
-| 500 | Server error | Show generic message |
+- Identify the authoritative owner of each field.
+- Update client model, repository/source, backend handler, security rules, and
+  migration/default behavior together when a schema crosses boundaries.
+- Make retryable backend operations idempotent.
+- Use a transaction/batch for multi-document invariants.
+- Preserve the existing error contract and user-safe messages.
+- Add a regression test or document the exact manual verification.
+
+## Endpoint / Callable Registry
+
+| System | Operation | Input | Output | Owner |
+|---|---|---|---|
+| _(fill from source)_ | | | | |

@@ -1,24 +1,26 @@
 # Flutter Project
 
 ## Stack
-- Flutter stable / Dart 3.x
-- State: Provider + ChangeNotifier
-- Navigation: go_router
-- HTTP: Dio + interceptors
-- Storage: Hive / shared_preferences
-- Auth: custom JWT
+- Flutter / Dart. Treat `pubspec.yaml`, bootstrap code, and
+  `.claude/PROJECT_MAP.md` as the current stack inventory.
+- New AgentKit projects start with Provider, go_router, Dio, and Hive.
+- Existing projects may use different auth, storage, and backend services;
+  inspect the actual implementation before changing an integration.
 
 ## Commands
 - `flutter run` — dev
 - `flutter run --release` — release
-- `flutter analyze` — lint
-- `dart fix --apply` — auto fix
+- `flutter analyze` — required static analysis
+- `dart format --output=none --set-exit-if-changed lib test` — formatting check
+- `flutter test` — run targeted or full tests when tests exist
 - `flutter pub get` — install deps
 - `flutter gen-l10n` — regen i18n
-- Never run `flutter build` or `flutter test` unless explicitly asked
+- `bash .agents/skills/verify-project/scripts/detect-recurring-risks.sh` — refresh risk signals
+- `bash .agents/skills/verify-project/scripts/verify.sh` — safe project checks
+- Run release builds only when the task requires release validation.
 
 ## Git
-Read `docs/git-flow-release.md` before any branch, merge, or release work.
+If `docs/git-flow-release.md` exists, read it before branch, merge, or release work.
 
 ## Cross-agent note
 This project is configured for both Claude Code (`.claude/`) and Codex CLI
@@ -51,6 +53,7 @@ must stay equivalent — `.claude/reference/`, `.claude/context/`, and
 
 | File | Read when |
 |---|---|
+| `.claude/PROJECT_RISKS.md` | Before every task; refresh when missing or after risky changes |
 | `.claude/context/sprint.md` | Starting a new session or task scope is ambiguous |
 | `.claude/context/known-issues.md` | Before fixing a bug or editing a fragile area |
 | `.claude/context/changelog.md` | Need to know what changed recently |
@@ -62,6 +65,7 @@ must stay equivalent — `.claude/reference/`, `.claude/context/`, and
 | Skill | Invoke when |
 |---|---|
 | `/scan-project` | `PROJECT_MAP.md` missing or > 7 days old |
+| `/verify-project` | Before finishing a code change or after fixing a bug |
 
 Re-run scan manually anytime: `bash .claude/skills/scan-project/scan.sh`
 
@@ -77,12 +81,11 @@ Re-run scan manually anytime: `bash .claude/skills/scan-project/scan.sh`
 
 ---
 
-## snippets/ — Copy directly into project
+## snippets/ — Project-specific examples only
 
 | File | Use for |
 |---|---|
-| `.claude/snippets/base_provider.dart` | Base class for feature providers |
-| `.claude/snippets/api_interceptor.dart` | Auth + error Dio interceptors |
+| `.claude/snippets/README.md` | Rules for adding verified, project-specific snippets |
 
 ---
 
